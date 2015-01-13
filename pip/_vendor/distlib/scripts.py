@@ -80,7 +80,7 @@ class ScriptMaker(object):
         self.force = False
         self.clobber = False
         # It only makes sense to set mode bits on POSIX.
-        self.set_mode = (os.name == 'posix')
+        self.set_mode = (os.name == 'posix' or (os.name == 'java' and os._name == 'posix'))
         self.variants = set(('', 'X.Y'))
         self._fileop = fileop or FileOperator(dry_run)
 
@@ -90,6 +90,24 @@ class ScriptMaker(object):
             fn = fn.replace('python', 'pythonw')
             executable = os.path.join(dn, fn)
         return executable
+
+    def _is_shell(self, executable):
+        """Determine if the specified executable is a .sh (contains a #! line)"""
+        try:
+            with open(executable) as fp:
+                return fp.read(2) == '#!'
+        except (OSError, IOError):
+            return False  # FIXME log
+
+    def _fix_jython_executable(self, executable):
+        if sys.platform.startswith('java') and self._is_shell(executable):
+            # Workaround for Jython is not needed on Linux systems.
+            import java
+
+            if java.lang.System.getProperty("os.name") == "Linux":
+                return executable
+
+        return '/usr/bin/env %s' % executable
 
     def _get_shebang(self, encoding, post_interp=b'', options=None):
         if self.executable:
@@ -107,6 +125,7 @@ class ScriptMaker(object):
         if options:
             executable = self._get_alternate_executable(executable, options)
 
+        executable = self._fix_jython_executable(executable)
         executable = fsencode(executable)
         shebang = b'#!' + executable + post_interp + b'\n'
         # Python parser starts to read a script using UTF-8 until
