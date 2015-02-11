@@ -18,6 +18,9 @@ from .util import (FileOperator, get_export_entry, convert_path,
 
 logger = logging.getLogger(__name__)
 
+is_posix = os.name == 'posix' or (os.name == 'java' and os._name == 'posix')
+is_windows = os.name == "nt" or (os.name == "java" and os._name == "nt")
+
 _DEFAULT_MANIFEST = '''
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
@@ -80,12 +83,12 @@ class ScriptMaker(object):
         self.force = False
         self.clobber = False
         # It only makes sense to set mode bits on POSIX.
-        self.set_mode = (os.name == 'posix' or (os.name == 'java' and os._name == 'posix'))
+        self.set_mode = is_posix
         self.variants = set(('', 'X.Y'))
         self._fileop = fileop or FileOperator(dry_run)
 
     def _get_alternate_executable(self, executable, options):
-        if options.get('gui', False) and os.name == 'nt':
+        if options.get('gui', False) and is_windows:
             dn, fn = os.path.split(executable)
             fn = fn.replace('python', 'pythonw')
             executable = os.path.join(dn, fn)
@@ -161,7 +164,7 @@ class ScriptMaker(object):
         return self.manifest % base
 
     def _write_script(self, names, shebang, script_bytes, filenames, ext):
-        use_launcher = self.add_launchers and os.name == 'nt'
+        use_launcher = self.add_launchers and is_windows
         linesep = os.linesep.encode('utf-8')
         if not use_launcher:
             script_bytes = shebang + linesep + script_bytes
@@ -200,7 +203,7 @@ class ScriptMaker(object):
                     except Exception:
                         pass    # still in use - ignore error
             else:
-                if os.name == 'nt' and not outname.endswith('.' + ext):
+                if is_windows and not outname.endswith('.' + ext):
                     outname = '%s.%s' % (outname, ext)
                 if os.path.exists(outname) and not self.clobber:
                     logger.warning('Skipping existing file %s', outname)
@@ -287,7 +290,7 @@ class ScriptMaker(object):
     def dry_run(self, value):
         self._fileop.dry_run = value
 
-    if os.name == 'nt':
+    if is_windows:
         # Executable launcher support.
         # Launchers are from https://bitbucket.org/vinay.sajip/simple_launcher/
 
