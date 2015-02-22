@@ -103,11 +103,15 @@ class ScriptMaker(object):
             return False  # FIXME log
 
     def _fix_jython_executable(self, executable):
-        if sys.platform.startswith('java') and self._is_shell(executable):
-            # Workaround for Jython is not needed on Linux systems.
-            import java
+        if sys.platform.startswith('java'):
+            if self._is_shell(executable):
+                # Workaround for Jython is not needed on Linux systems.
+                import java
 
-            if java.lang.System.getProperty("os.name") == "Linux":
+                if java.lang.System.getProperty("os.name") == "Linux":
+                    return executable
+            elif executable.endswith('jython.exe'):
+                # Use wrapper exe for Jython on Windows
                 return executable
 
         return '/usr/bin/env %s' % executable
