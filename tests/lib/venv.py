@@ -37,7 +37,7 @@ class VirtualEnvironment(object):
         super(VirtualEnvironment, self).__init__(*args, **kwargs)
 
     def __repr__(self):
-        return "<VirtualEnvironment {}>".format(self.location)
+        return "<VirtualEnvironment {0}>".format(self.location)
 
     @classmethod
     def create(cls, location, clear=False, pip_source_dir=None):
@@ -52,23 +52,23 @@ class VirtualEnvironment(object):
             clear=clear,
             never_download=True,
             no_pip=True,
+            no_wheel=True,
         )
 
         # Install our development version of pip install the virtual
         # environment
-        cmd = [self.bin.join("python"), "setup.py", "develop"]
+        cmd = [self.bin.join("python"), "setup.py", "install", "--no-compile"]
         p = subprocess.Popen(
             cmd,
             cwd=self.pip_source_dir,
-            # stderr=subprocess.STDOUT,
-            # stdout=DEVNULL,
+            stderr=subprocess.STDOUT,
+            stdout=DEVNULL,
         )
         p.communicate()
         if p.returncode != 0:
-            raise Exception(p.stderr)
             raise subprocess.CalledProcessError(
                 p.returncode,
-                cmd[0],
+                cmd,
                 output=p.stdout,
             )
 

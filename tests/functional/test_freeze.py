@@ -1,9 +1,10 @@
 import sys
 import re
 import textwrap
+import pytest
 from doctest import OutputChecker, ELLIPSIS
 
-from tests.lib.local_repos import local_checkout, local_repo
+from tests.lib import _create_test_package, _create_test_package_with_srcdir
 
 
 distribute_re = re.compile('^distribute==[0-9.]+\n', re.MULTILINE)
@@ -56,211 +57,202 @@ def test_freeze_basic(script):
     )
     result = script.pip('freeze', expect_stderr=True)
     expected = textwrap.dedent("""\
-        Script result: pip freeze
-        -- stdout: --------------------
         ...simple==2.0
         simple2==3.0...
         <BLANKLINE>""")
-    _check_output(result, expected)
+    _check_output(result.stdout, expected)
 
 
+@pytest.mark.svn
 def test_freeze_svn(script, tmpdir):
     """Test freezing a svn checkout"""
 
-    checkout_path = local_checkout(
-        'svn+http://svn.colorstudy.com/INITools/trunk',
-        tmpdir.join("cache"),
-    )
-    # svn internally stores windows drives as uppercase; we'll match that.
-    checkout_path = checkout_path.replace('c:', 'C:')
+    checkout_path = _create_test_package(script, vcs='svn')
 
-    # Checkout
-    script.run(
-        'svn', 'co', '-r10',
-        local_repo(
-            'svn+http://svn.colorstudy.com/INITools/trunk',
-            tmpdir.join("cache"),
-        ),
-        'initools-trunk',
-    )
     # Install with develop
     script.run(
         'python', 'setup.py', 'develop',
-        cwd=script.scratch_path / 'initools-trunk',
-        expect_stderr=True,
+        cwd=checkout_path, expect_stderr=True
     )
     result = script.pip('freeze', expect_stderr=True)
-
     expected = textwrap.dedent("""\
-        Script result: pip freeze
-        -- stdout: --------------------
-        ...-e %s@10#egg=INITools-0.3.1dev...-dev_r10
-        ...""" % checkout_path)
-    _check_output(result, expected)
+        ...-e svn+...#egg=version_pkg-0.1-...
+        ...""")
+    _check_output(result.stdout, expected)
 
 
+@pytest.mark.git
 def test_freeze_git_clone(script, tmpdir):
     """
     Test freezing a Git clone.
     """
+    # Returns path to a generated package called "version_pkg"
+    pkg_version = _create_test_package(script)
+
     result = script.run(
-        'git',
-        'clone',
-        local_repo(
-            'git+http://github.com/pypa/pip-test-package.git',
-            tmpdir.join("cache"),
-        ),
-        'pip-test-package',
+        'git', 'clone', pkg_version, 'pip-test-package',
         expect_stderr=True,
     )
-    result = script.run(
-        'git',
-        'checkout',
-        '7d654e66c8fa7149c165ddeffa5b56bc06619458',
-        cwd=script.scratch_path / 'pip-test-package',
-        expect_stderr=True,
-    )
+    repo_dir = script.scratch_path / 'pip-test-package'
     result = script.run(
         'python', 'setup.py', 'develop',
-        cwd=script.scratch_path / 'pip-test-package'
+        cwd=repo_dir,
+        expect_stderr=True,
     )
     result = script.pip('freeze', expect_stderr=True)
     expected = textwrap.dedent(
         """
-            Script result: ...pip freeze
-            -- stdout: --------------------
-            ...-e %s@...#egg=pip_test_package-...
+            ...-e git+...#egg=version_pkg-master
             ...
-        """ %
-        local_checkout(
-            'git+http://github.com/pypa/pip-test-package.git',
-            tmpdir.join("cache"),
-        )
+        """
     ).strip()
-    _check_output(result, expected)
+    _check_output(result.stdout, expected)
 
     result = script.pip(
-        'freeze', '-f',
-        '%s#egg=pip_test_package' %
-        local_checkout(
-            'git+http://github.com/pypa/pip-test-package.git',
-            tmpdir.join("cache"),
-        ),
+        'freeze', '-f', '%s#egg=pip_test_package' % repo_dir,
         expect_stderr=True,
     )
     expected = textwrap.dedent(
         """
-            Script result: pip freeze -f %(repo)s#egg=pip_test_package
-            -- stdout: --------------------
             -f %(repo)s#egg=pip_test_package...
-            -e %(repo)s@...#egg=pip_test_package-0.1.1
+            -e git+...#egg=version_pkg-master
             ...
-        """ %
-        {
-            'repo': local_checkout(
-                'git+http://github.com/pypa/pip-test-package.git',
-                tmpdir.join("cache"),
-            ),
-        },
+        """ % {'repo': repo_dir},
     ).strip()
-    _check_output(result, expected)
+    _check_output(result.stdout, expected)
+
+    # Check that slashes in branch or tag names are translated.
+    # See also issue #1083: https://github.com/pypa/pip/issues/1083
+    script.run(
+        'git', 'checkout', '-b', 'branch/name/with/slash',
+        cwd=repo_dir,
+        expect_stderr=True,
+    )
+    # Create a new commit to ensure that the commit has only one branch
+    # or tag name associated to it (to avoid the non-determinism reported
+    # in issue #1867).
+    script.run('touch', 'newfile', cwd=repo_dir)
+    script.run('git', 'add', 'newfile', cwd=repo_dir)
+    script.run('git', 'commit', '-m', '...', cwd=repo_dir)
+    result = script.pip('freeze', expect_stderr=True)
+    expected = textwrap.dedent(
+        """
+            ...-e ...@...#egg=version_pkg-branch_name_with_slash...
+            ...
+        """
+    ).strip()
+    _check_output(result.stdout, expected)
 
 
+@pytest.mark.git
+def test_freeze_git_clone_srcdir(script, tmpdir):
+    """
+    Test freezing a Git clone where setup.py is in a subdirectory
+    relative the repo root and the source code is in a subdirectory
+    relative to setup.py.
+    """
+    # Returns path to a generated package called "version_pkg"
+    pkg_version = _create_test_package_with_srcdir(script)
+
+    result = script.run(
+        'git', 'clone', pkg_version, 'pip-test-package',
+        expect_stderr=True,
+    )
+    repo_dir = script.scratch_path / 'pip-test-package'
+    result = script.run(
+        'python', 'setup.py', 'develop',
+        cwd=repo_dir / 'subdir',
+        expect_stderr=True,
+    )
+    result = script.pip('freeze', expect_stderr=True)
+    expected = textwrap.dedent(
+        """
+            ...-e git+...#egg=version_pkg-master&subdirectory=subdir
+            ...
+        """
+    ).strip()
+    _check_output(result.stdout, expected)
+
+    result = script.pip(
+        'freeze', '-f', '%s#egg=pip_test_package' % repo_dir,
+        expect_stderr=True,
+    )
+    expected = textwrap.dedent(
+        """
+            -f %(repo)s#egg=pip_test_package...
+            -e git+...#egg=version_pkg-master&subdirectory=subdir
+            ...
+        """ % {'repo': repo_dir},
+    ).strip()
+    _check_output(result.stdout, expected)
+
+
+@pytest.mark.mercurial
 def test_freeze_mercurial_clone(script, tmpdir):
     """
     Test freezing a Mercurial clone.
 
     """
+    # Returns path to a generated package called "version_pkg"
+    pkg_version = _create_test_package(script, vcs='hg')
+
     result = script.run(
-        'hg', 'clone',
-        '-r', 'c9963c111e7c',
-        local_repo(
-            'hg+http://bitbucket.org/pypa/pip-test-package',
-            tmpdir.join("cache"),
-        ),
-        'pip-test-package',
+        'hg', 'clone', pkg_version, 'pip-test-package',
+        expect_stderr=True,
     )
+    repo_dir = script.scratch_path / 'pip-test-package'
     result = script.run(
         'python', 'setup.py', 'develop',
-        cwd=script.scratch_path / 'pip-test-package',
+        cwd=repo_dir,
         expect_stderr=True,
     )
     result = script.pip('freeze', expect_stderr=True)
     expected = textwrap.dedent(
         """
-            Script result: ...pip freeze
-            -- stdout: --------------------
-            ...-e %s@...#egg=pip_test_package-...
+            ...-e hg+...#egg=version_pkg-dev
             ...
-        """ %
-        local_checkout(
-            'hg+http://bitbucket.org/pypa/pip-test-package',
-            tmpdir.join("cache"),
-        ),
+        """
     ).strip()
-    _check_output(result, expected)
+    _check_output(result.stdout, expected)
 
     result = script.pip(
-        'freeze', '-f',
-        '%s#egg=pip_test_package' %
-        local_checkout(
-            'hg+http://bitbucket.org/pypa/pip-test-package',
-            tmpdir.join("cache"),
-        ),
+        'freeze', '-f', '%s#egg=pip_test_package' % repo_dir,
         expect_stderr=True,
     )
     expected = textwrap.dedent(
         """
-            Script result: ...pip freeze -f %(repo)s#egg=pip_test_package
-            -- stdout: --------------------
-            -f %(repo)s#egg=pip_test_package
-            ...-e %(repo)s@...#egg=pip_test_package-dev
+            -f %(repo)s#egg=pip_test_package...
+            ...-e hg+...#egg=version_pkg-dev
             ...
-        """ %
-        {
-            'repo': local_checkout(
-                'hg+http://bitbucket.org/pypa/pip-test-package',
-                tmpdir.join("cache"),
-            ),
-        },
+        """ % {'repo': repo_dir},
     ).strip()
-    _check_output(result, expected)
+    _check_output(result.stdout, expected)
 
 
+@pytest.mark.bzr
 def test_freeze_bazaar_clone(script, tmpdir):
     """
     Test freezing a Bazaar clone.
 
     """
-
-    checkout_path = local_checkout(
-        'bzr+http://bazaar.launchpad.net/%7Edjango-wikiapp/django-wikiapp/'
-        'release-0.1',
-        tmpdir.join("cache"),
-    )
-    # bzr internally stores windows drives as uppercase; we'll match that.
-    checkout_pathC = checkout_path.replace('c:', 'C:')
+    try:
+        checkout_path = _create_test_package(script, vcs='bazaar')
+    except OSError as e:
+        pytest.fail('Invoking `bzr` failed: %s' % e)
 
     result = script.run(
-        'bzr', 'checkout', '-r', '174',
-        local_repo(
-            'bzr+http://bazaar.launchpad.net/%7Edjango-wikiapp/django-wikiapp/'
-            'release-0.1',
-            tmpdir.join("cache"),
-        ),
-        'django-wikiapp',
+        'bzr', 'checkout', checkout_path, 'bzr-package'
     )
     result = script.run(
         'python', 'setup.py', 'develop',
-        cwd=script.scratch_path / 'django-wikiapp',
+        cwd=script.scratch_path / 'bzr-package',
+        expect_stderr=True,
     )
     result = script.pip('freeze', expect_stderr=True)
     expected = textwrap.dedent("""\
-        Script result: ...pip freeze
-        -- stdout: --------------------
-        ...-e %s@...#egg=django_wikiapp-...
-        ...""" % checkout_pathC)
-    _check_output(result, expected)
+        ...-e bzr+file://...@1#egg=version_pkg-0.1-...
+        ...""")
+    _check_output(result.stdout, expected)
 
     result = script.pip(
         'freeze', '-f',
@@ -268,12 +260,10 @@ def test_freeze_bazaar_clone(script, tmpdir):
         expect_stderr=True,
     )
     expected = textwrap.dedent("""\
-        Script result: ...pip freeze -f %(repo)s/#egg=django-wikiapp
-        -- stdout: --------------------
         -f %(repo)s/#egg=django-wikiapp
-        ...-e %(repoC)s@...#egg=django_wikiapp-...
-        ...""" % {'repoC': checkout_pathC, 'repo': checkout_path})
-    _check_output(result, expected)
+        ...-e bzr+file://...@...#egg=version_pkg-...
+        ...""" % {'repo': checkout_path})
+    _check_output(result.stdout, expected)
 
 
 def test_freeze_with_local_option(script):
@@ -281,11 +271,9 @@ def test_freeze_with_local_option(script):
     Test that wsgiref (from global site-packages) is reported normally, but not
     with --local.
     """
-    result = script.pip('install', 'initools==0.2')
+    result = script.pip_install_local('initools==0.2')
     result = script.pip('freeze', expect_stderr=True)
     expected = textwrap.dedent("""\
-        Script result: ...pip freeze
-        -- stdout: --------------------
         INITools==0.2
         wsgiref==...
         <BLANKLINE>""")
@@ -299,11 +287,9 @@ def test_freeze_with_local_option(script):
 
     result = script.pip('freeze', '--local', expect_stderr=True)
     expected = textwrap.dedent("""\
-        Script result: ...pip freeze --local
-        -- stdout: --------------------
         INITools==0.2
         <BLANKLINE>""")
-    _check_output(result, expected)
+    _check_output(result.stdout, expected)
 
 
 def test_freeze_with_requirement_option(script):
@@ -326,19 +312,35 @@ def test_freeze_with_requirement_option(script):
     script.scratch_path.join("hint.txt").write(textwrap.dedent("""\
         INITools==0.1
         NoExist==4.2
+        simple==3.0; python_version > '1.0'
         """) + ignores)
-    result = script.pip('install', 'initools==0.2')
+    result = script.pip_install_local('initools==0.2')
     result = script.pip_install_local('simple')
     result = script.pip(
         'freeze', '--requirement', 'hint.txt',
         expect_stderr=True,
     )
     expected = """\
-Script result: pip freeze --requirement hint.txt
--- stderr: --------------------
-Requirement file contains NoExist==4.2, but that package is not installed
-
--- stdout: --------------------
 INITools==0.2
-""" + ignores + "## The following requirements were added by pip --freeze:..."
-    _check_output(result, expected)
+simple==3.0
+""" + ignores + "## The following requirements were added by pip freeze:..."
+    _check_output(result.stdout, expected)
+    assert (
+        "Requirement file contains NoExist==4.2, but that package is not "
+        "installed"
+    ) in result.stderr
+
+
+def test_freeze_user(script, virtualenv):
+    """
+    Testing freeze with --user, first we have to install some stuff.
+    """
+    virtualenv.system_site_packages = True
+    script.pip_install_local('--user', 'simple==2.0')
+    script.pip_install_local('simple2==3.0')
+    result = script.pip('freeze', '--user', expect_stderr=True)
+    expected = textwrap.dedent("""\
+        simple==2.0
+        <BLANKLINE>""")
+    _check_output(result.stdout, expected)
+    assert 'simple2' not in result.stdout

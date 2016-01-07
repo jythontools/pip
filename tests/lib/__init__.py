@@ -1,6 +1,6 @@
-# #!/usr/bin/env python
 from __future__ import absolute_import
 
+from contextlib import contextmanager
 import os
 import sys
 import re
@@ -16,7 +16,7 @@ DATA_DIR = Path(__file__).folder.folder.join("data").abspath
 SRC_DIR = Path(__file__).abspath.folder.folder.folder
 
 pyversion = sys.version[:3]
-pyversion_nodot = "%d%d" % (sys.version_info[0], sys.version_info[1])
+pyversion_tuple = sys.version_info
 
 
 def path_to_url(path):
@@ -69,6 +69,14 @@ class TestData(object):
         return self.root.join("packages2")
 
     @property
+    def packages3(self):
+        return self.root.join("packages3")
+
+    @property
+    def src(self):
+        return self.root.join("src")
+
+    @property
     def indexes(self):
         return self.root.join("indexes")
 
@@ -83,6 +91,10 @@ class TestData(object):
     @property
     def find_links2(self):
         return path_to_url(self.packages2)
+
+    @property
+    def find_links3(self):
+        return path_to_url(self.packages3)
 
     def index_url(self, index="simple"):
         return path_to_url(self.root.join("indexes", index))
@@ -163,8 +175,8 @@ class TestPipResult(object):
             egg_link_file = self.files_created[egg_link_path]
 
             # FIXME: I don't understand why there's a trailing . here
-            if not (egg_link_file.bytes.endswith('\n.')
-                    and egg_link_file.bytes[:-2].endswith(pkg_dir)):
+            if not (egg_link_file.bytes.endswith('\n.') and
+                    egg_link_file.bytes[:-2].endswith(pkg_dir)):
                 raise TestFailure(textwrap.dedent(u('''\
                     Incorrect egg_link file %r
                     Expected ending: %r
@@ -233,7 +245,9 @@ class PipTestEnvironment(scripttest.TestFileEnvironment):
 
         # Store paths related to the virtual environment
         _virtualenv = kwargs.pop("virtualenv")
-        venv, lib, include, bin = virtualenv.path_locations(_virtualenv)
+        path_locations = virtualenv.path_locations(_virtualenv)
+        # Make sure we have test.lib.path.Path objects
+        venv, lib, include, bin = map(Path, path_locations)
         # workaround for https://github.com/pypa/virtualenv/issues/306
         if hasattr(sys, "pypy_version_info"):
             lib = os.path.join(venv, 'lib-python', pyversion)
@@ -267,7 +281,6 @@ class PipTestEnvironment(scripttest.TestFileEnvironment):
         if environ is None:
             environ = os.environ.copy()
 
-        environ["PIP_LOG_FILE"] = base_path.join("pip-log.txt")
         environ["PATH"] = Path.pathsep.join(
             [self.bin_path] + [environ.get("PATH", [])],
         )
@@ -285,6 +298,8 @@ class PipTestEnvironment(scripttest.TestFileEnvironment):
             real_name = "%s_path" % name
             setattr(self, name, getattr(self, real_name) - self.base_path)
 
+        # Make sure temp_path is a Path object
+        self.temp_path = Path(self.temp_path)
         # Ensure the tmp dir exists, things break horribly if it doesn't
         self.temp_path.mkdir()
 
@@ -313,6 +328,16 @@ class PipTestEnvironment(scripttest.TestFileEnvironment):
         )
 
     def pip(self, *args, **kwargs):
+        # On old versions of Python, urllib3/requests will raise a warning
+        # about the lack of an SSLContext. Expect it when running commands
+        # that will touch the outside world.
+        if (pyversion_tuple < (2, 7, 9) and
+                args and args[0] in ('search', 'install', 'download')):
+            kwargs['expect_stderr'] = True
+        # Python 2.6 is deprecated and we emit a warning on it.
+        if pyversion_tuple[:2] == (2, 6):
+            kwargs['expect_stderr'] = True
+
         return self.run("pip", *args, **kwargs)
 
     def pip_install_local(self, *args, **kwargs):
@@ -440,38 +465,113 @@ setup(name='version_subpkg',
     script.run('git', 'add', '.', cwd=version_pkg_path)
     script.run(
         'git', 'commit', '-q',
-        '--author', 'Pip <python-virtualenv@googlegroups.com>',
+        '--author', 'pip <pypa-dev@googlegroups.com>',
         '-am', 'initial version', cwd=version_pkg_path
     )
 
     return version_pkg_path
 
 
-def _create_test_package(script):
-    script.scratch_path.join("version_pkg").mkdir()
-    version_pkg_path = script.scratch_path / 'version_pkg'
-    version_pkg_path.join("version_pkg.py").write(textwrap.dedent("""
+def _create_test_package_with_srcdir(script, name='version_pkg', vcs='git'):
+    script.scratch_path.join(name).mkdir()
+    version_pkg_path = script.scratch_path / name
+    subdir_path = version_pkg_path.join('subdir')
+    subdir_path.mkdir()
+    src_path = subdir_path.join('src')
+    src_path.mkdir()
+    pkg_path = src_path.join('pkg')
+    pkg_path.mkdir()
+    pkg_path.join('__init__.py').write('')
+    subdir_path.join("setup.py").write(textwrap.dedent("""
+        from setuptools import setup, find_packages
+        setup(
+            name='{name}',
+            version='0.1',
+            packages=find_packages(),
+            package_dir={{'': 'src'}},
+        )
+    """.format(name=name)))
+    return _vcs_add(script, version_pkg_path, vcs)
+
+
+def _create_test_package(script, name='version_pkg', vcs='git'):
+    script.scratch_path.join(name).mkdir()
+    version_pkg_path = script.scratch_path / name
+    version_pkg_path.join("%s.py" % name).write(textwrap.dedent("""
         def main():
             print('0.1')
     """))
     version_pkg_path.join("setup.py").write(textwrap.dedent("""
         from setuptools import setup, find_packages
         setup(
-            name='version_pkg',
+            name='{name}',
             version='0.1',
             packages=find_packages(),
-            py_modules=['version_pkg'],
-            entry_points=dict(console_scripts=['version_pkg=version_pkg:main'])
+            py_modules=['{name}'],
+            entry_points=dict(console_scripts=['{name}={name}:main'])
         )
-    """))
-    script.run('git', 'init', cwd=version_pkg_path)
-    script.run('git', 'add', '.', cwd=version_pkg_path)
-    script.run(
-        'git', 'commit', '-q',
-        '--author', 'Pip <python-virtualenv@googlegroups.com>',
-        '-am', 'initial version', cwd=version_pkg_path,
-    )
+    """.format(name=name)))
+    return _vcs_add(script, version_pkg_path, vcs)
+
+
+def _vcs_add(script, version_pkg_path, vcs='git'):
+    if vcs == 'git':
+        script.run('git', 'init', cwd=version_pkg_path)
+        script.run('git', 'add', '.', cwd=version_pkg_path)
+        script.run(
+            'git', 'commit', '-q',
+            '--author', 'pip <pypa-dev@googlegroups.com>',
+            '-am', 'initial version', cwd=version_pkg_path,
+        )
+    elif vcs == 'hg':
+        script.run('hg', 'init', cwd=version_pkg_path)
+        script.run('hg', 'add', '.', cwd=version_pkg_path)
+        script.run(
+            'hg', 'commit', '-q',
+            '--user', 'pip <pypa-dev@googlegroups.com>',
+            '-m', 'initial version', cwd=version_pkg_path,
+        )
+    elif vcs == 'svn':
+        repo_url = _create_svn_repo(script, version_pkg_path)
+        script.run(
+            'svn', 'checkout', repo_url, 'pip-test-package',
+            cwd=script.scratch_path
+        )
+        checkout_path = script.scratch_path / 'pip-test-package'
+
+        # svn internally stores windows drives as uppercase; we'll match that.
+        checkout_path = checkout_path.replace('c:', 'C:')
+
+        version_pkg_path = checkout_path
+    elif vcs == 'bazaar':
+        script.run('bzr', 'init', cwd=version_pkg_path)
+        script.run('bzr', 'add', '.', cwd=version_pkg_path)
+        script.run(
+            'bzr', 'whoami', 'pip <pypa-dev@googlegroups.com>',
+            cwd=version_pkg_path)
+        script.run(
+            'bzr', 'commit', '-q',
+            '--author', 'pip <pypa-dev@googlegroups.com>',
+            '-m', 'initial version', cwd=version_pkg_path,
+        )
+    else:
+        raise ValueError('Unknown vcs: %r' % vcs)
     return version_pkg_path
+
+
+def _create_svn_repo(script, version_pkg_path):
+    repo_url = path_to_url(
+        script.scratch_path / 'pip-test-package-repo' / 'trunk')
+    script.run(
+        'svnadmin', 'create', 'pip-test-package-repo',
+        cwd=script.scratch_path
+    )
+    script.run(
+        'svn', 'import', version_pkg_path, repo_url,
+        '-m', 'Initial import of pip-test-package',
+        cwd=script.scratch_path
+    )
+    return repo_url
 
 
 def _change_test_package_version(script, version_pkg_path):
@@ -485,7 +585,7 @@ def _change_test_package_version(script, version_pkg_path):
     )
     script.run(
         'git', 'commit', '-q',
-        '--author', 'Pip <python-virtualenv@googlegroups.com>',
+        '--author', 'pip <pypa-dev@googlegroups.com>',
         '-am', 'messed version',
         cwd=version_pkg_path,
         expect_stderr=True,
@@ -499,7 +599,22 @@ def assert_raises_regexp(exception, reg, run, *args, **kwargs):
     try:
         run(*args, **kwargs)
         assert False, "%s should have been thrown" % exception
-    except Exception:
+    except exception:
         e = sys.exc_info()[1]
         p = re.compile(reg)
         assert p.search(str(e)), str(e)
+
+
+@contextmanager
+def requirements_file(contents, tmpdir):
+    """Return a Path to a requirements file of given contents.
+
+    As long as the context manager is open, the requirements file will exist.
+
+    :param tmpdir: A Path to the folder in which to create the file
+
+    """
+    path = tmpdir / 'reqs.txt'
+    path.write(contents)
+    yield path
+    path.remove()

@@ -1,16 +1,27 @@
 #!/usr/bin/env python
+from __future__ import absolute_import
+
+import logging
 import os
 import optparse
+import warnings
 
 import sys
 import re
 
 from pip.exceptions import InstallationError, CommandError, PipError
-from pip.log import logger
-from pip.util import get_installed_distributions, get_prog
+from pip.utils import get_installed_distributions, get_prog
+from pip.utils import deprecation, dist_is_editable
 from pip.vcs import git, mercurial, subversion, bazaar  # noqa
 from pip.baseparser import ConfigOptionParser, UpdatingDefaultsHelpFormatter
-from pip.commands import commands, get_summaries, get_similar_commands
+from pip.commands import get_summaries, get_similar_commands
+from pip.commands import commands_dict
+from pip._vendor.requests.packages.urllib3.exceptions import (
+    InsecureRequestWarning,
+)
+
+
+# assignment for flake8 to be happy
 
 # This fixes a peculiarity when importing via __import__ - as we are
 # initialising the pip module, "from pip import cmdoptions" is recursive
@@ -19,7 +30,13 @@ import pip.cmdoptions
 cmdoptions = pip.cmdoptions
 
 # The version as used in the setup.py and the docs conf.py
-__version__ = "1.6.dev1"
+__version__ = "8.0.0.dev0"
+
+
+logger = logging.getLogger(__name__)
+
+# Hide the InsecureRequestWArning from urllib3
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 
 def autocomplete():
@@ -65,7 +82,7 @@ def autocomplete():
                     print(dist)
                 sys.exit(1)
 
-        subcommand = commands[subcommand_name]()
+        subcommand = commands_dict[subcommand_name]()
         options += [(opt.get_opt_string(), opt.nargs)
                     for opt in subcommand.parser.option_list_all
                     if opt.help != optparse.SUPPRESS_HELP]
@@ -149,13 +166,9 @@ def parseopts(args):
         sys.exit()
 
     # the subcommand name
-    cmd_name = args_else[0].lower()
+    cmd_name = args_else[0]
 
-    # all the args without the subcommand
-    cmd_args = args[:]
-    cmd_args.remove(args_else[0].lower())
-
-    if cmd_name not in commands:
+    if cmd_name not in commands_dict:
         guess = get_similar_commands(cmd_name)
 
         msg = ['unknown command "%s"' % cmd_name]
@@ -164,12 +177,32 @@ def parseopts(args):
 
         raise CommandError(' - '.join(msg))
 
+    # all the args without the subcommand
+    cmd_args = args[:]
+    cmd_args.remove(cmd_name)
+
     return cmd_name, cmd_args
+
+
+def check_isolated(args):
+    isolated = False
+
+    if "--isolated" in args:
+        isolated = True
+
+    return isolated
 
 
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
+
+    # Enable our Deprecation Warnings
+    for deprecation_warning in deprecation.DEPRECATIONS:
+        warnings.simplefilter("default", deprecation_warning)
+
+    # Configure our deprecation warnings to be sent through loggers
+    deprecation.install_warning_logger()
 
     autocomplete()
 
@@ -180,7 +213,7 @@ def main(args=None):
         sys.stderr.write(os.linesep)
         sys.exit(1)
 
-    command = commands[cmd_name]()
+    command = commands_dict[cmd_name](isolated=check_isolated(cmd_args))
     return command.main(cmd_args)
 
 
@@ -199,23 +232,23 @@ class FrozenRequirement(object):
     _date_re = re.compile(r'-(20\d\d\d\d\d\d)$')
 
     @classmethod
-    def from_dist(cls, dist, find_tags=False):
+    def from_dist(cls, dist, dependency_links, find_tags=False):
         location = os.path.normcase(os.path.abspath(dist.location))
         comments = []
         from pip.vcs import vcs, get_src_requirement
-        if vcs.get_backend_name(location):
+        if dist_is_editable(dist) and vcs.get_backend_name(location):
             editable = True
             try:
                 req = get_src_requirement(dist, location, find_tags)
             except InstallationError as exc:
-                logger.warn(
+                logger.warning(
                     "Error when trying to get requirement for VCS system %s, "
-                    "falling back to uneditable format" % exc
+                    "falling back to uneditable format", exc
                 )
                 req = None
             if req is None:
-                logger.warn(
-                    'Could not determine repository location of %s' % location
+                logger.warning(
+                    'Could not determine repository location of %s', location
                 )
                 comments.append(
                     '## !! Could not determine repository location'
@@ -226,8 +259,41 @@ class FrozenRequirement(object):
             editable = False
             req = dist.as_requirement()
             specs = req.specs
-            assert len(specs) == 1 and specs[0][0] == '=='
-
+            assert len(specs) == 1 and specs[0][0] in ["==", "==="], \
+                'Expected 1 spec with == or ===; specs = %r; dist = %r' % \
+                (specs, dist)
+            version = specs[0][1]
+            ver_match = cls._rev_re.search(version)
+            date_match = cls._date_re.search(version)
+            if ver_match or date_match:
+                svn_backend = vcs.get_backend('svn')
+                if svn_backend:
+                    svn_location = svn_backend().get_location(
+                        dist,
+                        dependency_links,
+                    )
+                if not svn_location:
+                    logger.warning(
+                        'Warning: cannot find svn location for %s', req)
+                    comments.append(
+                        '## FIXME: could not find svn URL in dependency_links '
+                        'for this package:'
+                    )
+                else:
+                    comments.append(
+                        '# Installing as editable to satisfy requirement %s:' %
+                        req
+                    )
+                    if ver_match:
+                        rev = ver_match.group(1)
+                    else:
+                        rev = '{%s}' % date_match.group(1)
+                    editable = True
+                    req = '%s@%s#egg=%s' % (
+                        svn_location,
+                        rev,
+                        cls.egg_name(dist)
+                    )
         return cls(dist.project_name, req, editable, comments)
 
     @staticmethod

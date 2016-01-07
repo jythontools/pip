@@ -1,13 +1,13 @@
 """
 tests specific to "pip install --user"
 """
-import imp
 import os
 import textwrap
+import pytest
 
 from os.path import curdir, isdir, isfile
 
-from pip.backwardcompat import uses_pycache
+from pip.compat import uses_pycache, cache_from_source
 
 from tests.lib.local_repos import local_checkout
 from tests.lib import pyversion
@@ -28,13 +28,14 @@ def _patch_dist_in_site_packages(script):
     #   file to be sure
     #   See: https://github.com/pypa/pip/pull/893#issuecomment-16426701
     if uses_pycache:
-        cache_path = imp.cache_from_source(sitecustomize_path)
+        cache_path = cache_from_source(sitecustomize_path)
         if os.path.isfile(cache_path):
             os.remove(cache_path)
 
 
 class Tests_UserSite:
 
+    @pytest.mark.network
     def test_reset_env_system_site_packages_usersite(self, script, virtualenv):
         """
         reset_env(system_site_packages=True) produces env where a --user
@@ -53,6 +54,7 @@ class Tests_UserSite:
             project_name
         )
 
+    @pytest.mark.network
     def test_install_subversion_usersite_editable_with_distribute(
             self, script, virtualenv, tmpdir):
         """
@@ -83,7 +85,7 @@ class Tests_UserSite:
         )
         fspkg_folder = script.user_site / 'fspkg'
         egg_info_folder = (
-            script.user_site / 'FSPkg-0.1dev-py%s.egg-info' % pyversion
+            script.user_site / 'FSPkg-0.1.dev0-py%s.egg-info' % pyversion
         )
         assert fspkg_folder in result.files_created, result.stdout
 
@@ -101,18 +103,20 @@ class Tests_UserSite:
         )
         assert (
             "Can not perform a '--user' install. User site-packages are not "
-            "visible in this virtualenv." in result.stdout
+            "visible in this virtualenv." in result.stderr
         )
 
+    @pytest.mark.network
     def test_install_user_conflict_in_usersite(self, script, virtualenv):
         """
         Test user install with conflict in usersite updates usersite.
         """
         virtualenv.system_site_packages = True
 
-        script.pip('install', '--user', 'INITools==0.3')
+        script.pip('install', '--user', 'INITools==0.3', '--no-binary=:all:')
 
-        result2 = script.pip('install', '--user', 'INITools==0.1')
+        result2 = script.pip(
+            'install', '--user', 'INITools==0.1', '--no-binary=:all:')
 
         # usersite has 0.1
         egg_info_folder = (
@@ -126,6 +130,7 @@ class Tests_UserSite:
         assert egg_info_folder in result2.files_created, str(result2)
         assert not isfile(initools_v3_file), initools_v3_file
 
+    @pytest.mark.network
     def test_install_user_conflict_in_globalsite(self, script, virtualenv):
         """
         Test user install with conflict in global site ignores site and
@@ -147,9 +152,10 @@ class Tests_UserSite:
         script.environ["PYTHONPATH"] = script.base_path / script.user_site
         _patch_dist_in_site_packages(script)
 
-        script.pip('install', 'INITools==0.2')
+        script.pip('install', 'INITools==0.2', '--no-binary=:all:')
 
-        result2 = script.pip('install', '--user', 'INITools==0.1')
+        result2 = script.pip(
+            'install', '--user', 'INITools==0.1', '--no-binary=:all:')
 
         # usersite has 0.1
         egg_info_folder = (
@@ -168,6 +174,7 @@ class Tests_UserSite:
         assert isdir(egg_info_folder)
         assert isdir(initools_folder)
 
+    @pytest.mark.network
     def test_upgrade_user_conflict_in_globalsite(self, script, virtualenv):
         """
         Test user install/upgrade with conflict in global site ignores site and
@@ -189,8 +196,9 @@ class Tests_UserSite:
         script.environ["PYTHONPATH"] = script.base_path / script.user_site
         _patch_dist_in_site_packages(script)
 
-        script.pip('install', 'INITools==0.2')
-        result2 = script.pip('install', '--user', '--upgrade', 'INITools')
+        script.pip('install', 'INITools==0.2', '--no-binary=:all:')
+        result2 = script.pip(
+            'install', '--user', '--upgrade', 'INITools', '--no-binary=:all:')
 
         # usersite has 0.3.1
         egg_info_folder = (
@@ -209,6 +217,7 @@ class Tests_UserSite:
         assert isdir(egg_info_folder), result2.stdout
         assert isdir(initools_folder)
 
+    @pytest.mark.network
     def test_install_user_conflict_in_globalsite_and_usersite(
             self, script, virtualenv):
         """
@@ -231,10 +240,11 @@ class Tests_UserSite:
         script.environ["PYTHONPATH"] = script.base_path / script.user_site
         _patch_dist_in_site_packages(script)
 
-        script.pip('install', 'INITools==0.2')
-        script.pip('install', '--user', 'INITools==0.3')
+        script.pip('install', 'INITools==0.2', '--no-binary=:all:')
+        script.pip('install', '--user', 'INITools==0.3', '--no-binary=:all:')
 
-        result3 = script.pip('install', '--user', 'INITools==0.1')
+        result3 = script.pip(
+            'install', '--user', 'INITools==0.1', '--no-binary=:all:')
 
         # usersite has 0.1
         egg_info_folder = (
@@ -257,6 +267,7 @@ class Tests_UserSite:
         assert isdir(egg_info_folder)
         assert isdir(initools_folder)
 
+    @pytest.mark.network
     def test_install_user_in_global_virtualenv_with_conflict_fails(
             self, script, virtualenv):
         """
@@ -280,5 +291,5 @@ class Tests_UserSite:
         assert (
             "Will not install to the user site because it will lack sys.path "
             "precedence to %s in %s" %
-            ('INITools', dist_location) in result2.stdout, result2.stdout
+            ('INITools', dist_location) in result2.stderr
         )

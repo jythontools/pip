@@ -1,5 +1,6 @@
 from __future__ import absolute_import, division, unicode_literals
 from pip._vendor.six import text_type
+from pip._vendor.six.moves import http_client
 
 import codecs
 import platform
@@ -28,18 +29,18 @@ asciiLettersBytes = frozenset([item.encode("ascii") for item in asciiLetters])
 asciiUppercaseBytes = frozenset([item.encode("ascii") for item in asciiUppercase])
 spacesAngleBrackets = spaceCharactersBytes | frozenset([b">", b"<"])
 
-invalid_unicode_template = "[\u0001-\u0008\u000B\u000E-\u001F\u007F-\u009F\uFDD0-\uFDEF\uFFFE\uFFFF\U0001FFFE\U0001FFFF\U0002FFFE\U0002FFFF\U0003FFFE\U0003FFFF\U0004FFFE\U0004FFFF\U0005FFFE\U0005FFFF\U0006FFFE\U0006FFFF\U0007FFFE\U0007FFFF\U0008FFFE\U0008FFFF\U0009FFFE\U0009FFFF\U000AFFFE\U000AFFFF\U000BFFFE\U000BFFFF\U000CFFFE\U000CFFFF\U000DFFFE\U000DFFFF\U000EFFFE\U000EFFFF\U000FFFFE\U000FFFFF\U0010FFFE\U0010FFFF%s]"
 
-if platform.python_implementation() == "Jython":
-    # Jython does not allow the use of solitary surrogate escapes
-    # (\uD800-\uDFFF) in literals or other usage. This is because it
-    # uses UTF-16, which is based on the use of such surrogates.
-    invalid_unicode_re = re.compile(invalid_unicode_template % "")
+invalid_unicode_no_surrogate = "[\u0001-\u0008\u000B\u000E-\u001F\u007F-\u009F\uFDD0-\uFDEF\uFFFE\uFFFF\U0001FFFE\U0001FFFF\U0002FFFE\U0002FFFF\U0003FFFE\U0003FFFF\U0004FFFE\U0004FFFF\U0005FFFE\U0005FFFF\U0006FFFE\U0006FFFF\U0007FFFE\U0007FFFF\U0008FFFE\U0008FFFF\U0009FFFE\U0009FFFF\U000AFFFE\U000AFFFF\U000BFFFE\U000BFFFF\U000CFFFE\U000CFFFF\U000DFFFE\U000DFFFF\U000EFFFE\U000EFFFF\U000FFFFE\U000FFFFF\U0010FFFE\U0010FFFF]"
+
+if utils.supports_lone_surrogates:
+    # Use one extra step of indirection and create surrogates with
+    # unichr. Not using this indirection would introduce an illegal
+    # unicode literal on platforms not supporting such lone
+    # surrogates.
+    invalid_unicode_re = re.compile(invalid_unicode_no_surrogate +
+                                    eval('"\\uD800-\\uDFFF"'))
 else:
-    # Instead use one extra step of indirection and create surrogates with
-    # unichr
-    invalid_unicode_re = re.compile(invalid_unicode_template % (
-        "%s-%s" % (unichr(0xD800), unichr(0xDFFF)),))
+    invalid_unicode_re = re.compile(invalid_unicode_no_surrogate)
 
 non_bmp_invalid_codepoints = set([0x1FFFE, 0x1FFFF, 0x2FFFE, 0x2FFFF, 0x3FFFE,
                                   0x3FFFF, 0x4FFFE, 0x4FFFF, 0x5FFFE, 0x5FFFF,
@@ -55,7 +56,7 @@ ascii_punctuation_re = re.compile("[\u0009-\u000D\u0020-\u002F\u003A-\u0040\u005
 charsUntilRegEx = {}
 
 
-class BufferedStream:
+class BufferedStream(object):
     """Buffering for streams that do not have buffering of their own
 
     The buffer is implemented as a list of chunks on the assumption that
@@ -75,11 +76,11 @@ class BufferedStream:
         return pos
 
     def seek(self, pos):
-        assert pos < self._bufferedBytes()
+        assert pos <= self._bufferedBytes()
         offset = pos
         i = 0
         while len(self.buffer[i]) < offset:
-            offset -= pos
+            offset -= len(self.buffer[i])
             i += 1
         self.position = [i, offset]
 
@@ -126,11 +127,15 @@ class BufferedStream:
         if remainingBytes:
             rv.append(self._readStream(remainingBytes))
 
-        return "".join(rv)
+        return b"".join(rv)
 
 
 def HTMLInputStream(source, encoding=None, parseMeta=True, chardet=True):
-    if hasattr(source, "read"):
+    if isinstance(source, http_client.HTTPResponse):
+        # Work around Python bug #20007: read(0) closes the connection.
+        # http://bugs.python.org/issue20007
+        isUnicode = False
+    elif hasattr(source, "read"):
         isUnicode = isinstance(source.read(0), text_type)
     else:
         isUnicode = isinstance(source, text_type)
@@ -144,7 +149,7 @@ def HTMLInputStream(source, encoding=None, parseMeta=True, chardet=True):
         return HTMLBinaryInputStream(source, encoding, parseMeta, chardet)
 
 
-class HTMLUnicodeInputStream:
+class HTMLUnicodeInputStream(object):
     """Provides a unicode stream of characters to the HTMLTokenizer.
 
     This class takes care of character encoding and removing or replacing
@@ -171,22 +176,18 @@ class HTMLUnicodeInputStream:
 
         """
 
-        # Craziness
-        if platform.python_implementation() == "Jython":
-            # By its nature Jython's UTF-16 support does not allow
-            # surrogate errors, so no need to do this check.
+        if not utils.supports_lone_surrogates:
+            # Such platforms will have already checked for such
+            # surrogate errors, so no need to do this checking.
             self.reportCharacterErrors = None
             self.replaceCharactersRegexp = None
         elif len("\U0010FFFF") == 1:
             self.reportCharacterErrors = self.characterErrorsUCS4
-            self.replaceCharactersRegexp = re.compile("{}".format(
-                "[{}-{}]".format(unichr(0xD800), unichr(0xDFFF))))
+            self.replaceCharactersRegexp = re.compile(eval('"[\\uD800-\\uDFFF]"'))
         else:
             self.reportCharacterErrors = self.characterErrorsUCS2
-            self.replaceCharactersRegexp = re.compile("{}".format(
-                "([{}-{}](?![{}-{})|(?<![{}-{}])[{}-{}])".format(
-                    unichr(0xD800), unichr(0xDBFF), unichr(0xDC00), unichr(0xDFFF),
-                    unichr(0xD800), unichr(0xDBFF), unichr(0xDC00), unichr(0xDFFF))))
+            self.replaceCharactersRegexp = re.compile(
+                eval('"([\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF])"'))
 
         # List of where new lines occur
         self.newLines = [0]
@@ -281,7 +282,7 @@ class HTMLUnicodeInputStream:
                 self._bufferedCharacter = data[-1]
                 data = data[:-1]
 
-        if platform.python_implementation() != "Jython":
+        if self.reportCharacterErrors:
             # data is already Unicode, so Jython already has dealt
             # with any surrogate character errors, no need to go here
             self.reportCharacterErrors(data)

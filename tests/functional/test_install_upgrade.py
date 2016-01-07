@@ -23,6 +23,7 @@ def test_no_upgrade_unless_requested(script):
     )
 
 
+@pytest.mark.network
 def test_upgrade_to_specific_version(script):
     """
     It does upgrade to specific version requested.
@@ -43,6 +44,7 @@ def test_upgrade_to_specific_version(script):
     )
 
 
+@pytest.mark.network
 def test_upgrade_if_requested(script):
     """
     And it does upgrade if requested.
@@ -70,6 +72,7 @@ def test_upgrade_with_newest_already_installed(script, data):
     assert 'already up-to-date' in result.stdout, result.stdout
 
 
+@pytest.mark.network
 def test_upgrade_force_reinstall_newest(script):
     """
     Force reinstallation of a package even if it is already at its newest
@@ -87,6 +90,7 @@ def test_upgrade_force_reinstall_newest(script):
     assert_all_changes(result, result3, [script.venv / 'build', 'cache'])
 
 
+@pytest.mark.network
 def test_uninstall_before_upgrade(script):
     """
     Automatic uninstall-before-upgrade.
@@ -102,6 +106,7 @@ def test_uninstall_before_upgrade(script):
     assert_all_changes(result, result3, [script.venv / 'build', 'cache'])
 
 
+@pytest.mark.network
 def test_uninstall_before_upgrade_from_url(script):
     """
     Automatic uninstall-before-upgrade from URL.
@@ -122,6 +127,7 @@ def test_uninstall_before_upgrade_from_url(script):
     assert_all_changes(result, result3, [script.venv / 'build', 'cache'])
 
 
+@pytest.mark.network
 def test_upgrade_to_same_version_from_url(script):
     """
     When installing from a URL the same version that is already installed, no
@@ -143,6 +149,7 @@ def test_upgrade_to_same_version_from_url(script):
     assert_all_changes(result, result3, [script.venv / 'build', 'cache'])
 
 
+@pytest.mark.network
 def test_upgrade_from_reqs_file(script):
     """
     Upgrade from a requirements file.
@@ -187,7 +194,7 @@ def test_uninstall_rollback(script, data):
         result.files_created.keys()
     )
     result2 = script.pip(
-        'install', '-f', data.find_links, '--no-index', 'broken==0.2broken',
+        'install', '-f', data.find_links, '--no-index', 'broken===0.2broken',
         expect_error=True,
     )
     assert result2.returncode == 1, str(result2)
@@ -197,7 +204,7 @@ def test_uninstall_rollback(script, data):
     assert_all_changes(
         result.files_after,
         result2,
-        [script.venv / 'build', 'pip-log.txt'],
+        [script.venv / 'build'],
     )
 
 
@@ -226,6 +233,7 @@ def test_editable_git_upgrade(script):
     )
 
 
+@pytest.mark.network
 def test_should_not_install_always_from_cache(script):
     """
     If there is an old cached package, pip should download the newer version
@@ -244,6 +252,7 @@ def test_should_not_install_always_from_cache(script):
     )
 
 
+@pytest.mark.network
 def test_install_with_ignoreinstalled_requested(script):
     """
     Test old conflicting package is completely ignored
@@ -260,6 +269,7 @@ def test_install_with_ignoreinstalled_requested(script):
     )
 
 
+@pytest.mark.network
 def test_upgrade_vcs_req_with_no_dists_found(script, tmpdir):
     """It can upgrade a VCS requirement that has no distributions otherwise."""
     req = "%s#egg=pip-test-package" % local_checkout(
@@ -271,28 +281,44 @@ def test_upgrade_vcs_req_with_no_dists_found(script, tmpdir):
     assert not result.returncode
 
 
+@pytest.mark.network
 def test_upgrade_vcs_req_with_dist_found(script):
     """It can upgrade a VCS requirement that has distributions on the index."""
     # TODO(pnasrat) Using local_checkout fails on windows - oddness with the
     # test path urls/git.
     req = (
-        "%s#egg=virtualenv" %
+        "%s#egg=pretend" %
         (
-            "git+git://github.com/pypa/virtualenv@c21fef2c2d53cf19f49bcc37f9"
-            "c058a33fb50499"
+            "git+git://github.com/alex/pretend@e7f26ad7dbcb4a02a4995aade4"
+            "743aad47656b27"
         )
     )
-    script.pip("install", req)
-    result = script.pip("install", "-U", req)
+    script.pip("install", req, expect_stderr=True)
+    result = script.pip("install", "-U", req, expect_stderr=True)
     assert "pypi.python.org" not in result.stdout, result.stdout
 
 
-class TestUpgradeSetuptools(object):
+class TestUpgradeDistributeToSetuptools(object):
     """
-    Tests for upgrading to setuptools (using pip from src tree)
-    The tests use a *fixed* set of packages from our test packages dir
-    note: virtualenv-1.9.1 contains distribute-0.6.34
-    note: virtualenv-1.10 contains setuptools-0.9.7
+    From pip1.4 to pip6, pip supported a set of "hacks" (see Issue #1122) to
+    allow distribute to conflict with setuptools, so that the following would
+    work to upgrade distribute:
+
+     ``pip install -U  setuptools``
+
+    In pip7, the hacks were removed.  This test remains to at least confirm pip
+    can upgrade distribute to setuptools using:
+
+      ``pip install -U distribute``
+
+    The reason this works is that a final version of distribute (v0.7.3) was
+    released that is simple wrapper with:
+
+      install_requires=['setuptools>=0.7']
+
+    The test use a fixed set of packages from our test packages dir. Note that
+    virtualenv-1.9.1 contains distribute-0.6.34 and virtualenv-1.10 contains
+    setuptools-0.9.7
     """
 
     def prep_ve(self, script, version, pip_src, distribute=False):
@@ -317,83 +343,26 @@ class TestUpgradeSetuptools(object):
             expect_stderr=True,
         )
 
-    @pytest.mark.skipif("sys.version_info >= (3,0)")
-    def test_py2_from_setuptools_6_to_setuptools_7(
-            self, script, data, virtualenv):
-        self.prep_ve(script, '1.9.1', virtualenv.pip_source_dir)
-        result = self.script.run(
-            self.ve_bin / 'pip', 'install', '--no-use-wheel', '--no-index',
-            '--find-links=%s' % data.find_links, '-U', 'setuptools'
-        )
-        assert (
-            "Found existing installation: setuptools 0.6c11" in result.stdout
-        )
-        result = self.script.run(self.ve_bin / 'pip', 'list')
-        "setuptools (0.9.8)" in result.stdout
-
-    def test_py2_py3_from_distribute_6_to_setuptools_7(
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 5),
+        reason="distribute doesn't work on Python 3.5",
+    )
+    def test_from_distribute_6_to_setuptools_7(
             self, script, data, virtualenv):
         self.prep_ve(
             script, '1.9.1', virtualenv.pip_source_dir, distribute=True
         )
         result = self.script.run(
             self.ve_bin / 'pip', 'install', '--no-index',
-            '--find-links=%s' % data.find_links, '-U', 'setuptools'
+            '--find-links=%s' % data.find_links, '-U', 'distribute',
+            expect_stderr=True if sys.version_info[:2] == (2, 6) else False,
         )
         assert (
             "Found existing installation: distribute 0.6.34" in result.stdout
         )
-        result = self.script.run(self.ve_bin / 'pip', 'list')
-        "setuptools (0.9.8)" in result.stdout
-        "distribute (0.7.3)" in result.stdout
-
-    def test_from_setuptools_7_to_setuptools_7(self, script, data, virtualenv):
-        self.prep_ve(script, '1.10', virtualenv.pip_source_dir)
         result = self.script.run(
-            self.ve_bin / 'pip', 'install', '--no-index',
-            '--find-links=%s' % data.find_links, '-U', 'setuptools'
+            self.ve_bin / 'pip', 'list',
+            expect_stderr=True if sys.version_info[:2] == (2, 6) else False,
         )
-        assert "Found existing installation: setuptools 0.9.7" in result.stdout
-        result = self.script.run(self.ve_bin / 'pip', 'list')
-        "setuptools (0.9.8)" in result.stdout
-
-    def test_from_setuptools_7_to_setuptools_7_using_wheel(
-            self, script, data, virtualenv):
-        self.prep_ve(script, '1.10', virtualenv.pip_source_dir)
-        result = self.script.run(
-            self.ve_bin / 'pip', 'install', '--use-wheel', '--no-index',
-            '--find-links=%s' % data.find_links, '-U', 'setuptools'
-        )
-        assert "Found existing installation: setuptools 0.9.7" in result.stdout
-        # only wheels use dist-info
-        assert 'setuptools-0.9.8.dist-info' in str(result.files_created)
-        result = self.script.run(self.ve_bin / 'pip', 'list')
-        "setuptools (0.9.8)" in result.stdout
-
-    # disabling intermittent travis failure:
-    #   https://github.com/pypa/pip/issues/1379
-    @pytest.mark.skipif("hasattr(sys, 'pypy_version_info')")
-    def test_from_setuptools_7_to_setuptools_7_with_distribute_7_installed(
-            self, script, data, virtualenv):
-        self.prep_ve(
-            script, '1.9.1', virtualenv.pip_source_dir, distribute=True
-        )
-        result = self.script.run(
-            self.ve_bin / 'pip', 'install', '--no-index',
-            '--find-links=%s' % data.find_links, '-U', 'setuptools'
-        )
-        result = self.script.run(
-            self.ve_bin / 'pip', 'install', '--no-index',
-            '--find-links=%s' % data.find_links, 'setuptools==0.9.6'
-        )
-        result = self.script.run(self.ve_bin / 'pip', 'list')
-        "setuptools (0.9.6)" in result.stdout
-        "distribute (0.7.3)" in result.stdout
-        result = self.script.run(
-            self.ve_bin / 'pip', 'install', '--no-index',
-            '--find-links=%s' % data.find_links, '-U', 'setuptools'
-        )
-        assert "Found existing installation: setuptools 0.9.6" in result.stdout
-        result = self.script.run(self.ve_bin / 'pip', 'list')
-        "setuptools (0.9.8)" in result.stdout
-        "distribute (0.7.3)" in result.stdout
+        assert "setuptools (0.9.8)" in result.stdout
+        assert "distribute (0.7.3)" in result.stdout

@@ -4,7 +4,7 @@ import pip.baseparser
 from pip import main
 from pip import cmdoptions
 from pip.basecommand import Command
-from pip.commands import commands
+from pip.commands import commands_dict as commands
 
 
 class FakeCommand(Command):
@@ -89,10 +89,10 @@ class TestOptionPrecedence(object):
         """
         os.environ['PIP_LOG_FILE'] = 'override.log'
         options, args = main(['fake'])
-        assert options.log_file == 'override.log'
+        assert options.log == 'override.log'
         os.environ['PIP_LOCAL_LOG'] = 'override.log'
         options, args = main(['fake'])
-        assert options.log_file == 'override.log'
+        assert options.log == 'override.log'
 
     def test_cli_override_environment(self):
         """
@@ -196,21 +196,23 @@ class TestGeneralOptions(object):
         options2, args2 = main(['fake', '--quiet'])
         assert options1.quiet == options2.quiet == 1
 
+        options3, args3 = main(['--quiet', '--quiet', 'fake'])
+        options4, args4 = main(['fake', '--quiet', '--quiet'])
+        assert options3.quiet == options4.quiet == 2
+
+        options5, args5 = main(['--quiet', '--quiet', '--quiet', 'fake'])
+        options6, args6 = main(['fake', '--quiet', '--quiet', '--quiet'])
+        assert options5.quiet == options6.quiet == 3
+
     def test_log(self):
         options1, args1 = main(['--log', 'path', 'fake'])
         options2, args2 = main(['fake', '--log', 'path'])
         assert options1.log == options2.log == 'path'
 
-    def test_log_explicit_levels(self):
-        options1, args1 = main(['--log-explicit-levels', 'fake'])
-        options2, args2 = main(['fake', '--log-explicit-levels'])
-        assert options1.log_explicit_levels
-        assert options2.log_explicit_levels
-
     def test_local_log(self):
         options1, args1 = main(['--local-log', 'path', 'fake'])
         options2, args2 = main(['fake', '--local-log', 'path'])
-        assert options1.log_file == options2.log_file == 'path'
+        assert options1.log == options2.log == 'path'
 
     def test_no_input(self):
         options1, args1 = main(['--no-input', 'fake'])
@@ -270,6 +272,9 @@ class TestOptionsConfigFiles(object):
             lambda self: None,
         )
 
+        # strict limit on the site_config_files list
+        monkeypatch.setattr(pip.baseparser, 'site_config_files', ['/a/place'])
+
         # If we are running in a virtualenv and all files appear to exist,
         # we should see two config files.
         monkeypatch.setattr(
@@ -279,4 +284,4 @@ class TestOptionsConfigFiles(object):
         )
         monkeypatch.setattr(os.path, 'exists', lambda filename: True)
         cp = pip.baseparser.ConfigOptionParser()
-        assert len(cp.get_config_files()) == 2
+        assert len(cp.get_config_files()) == 4

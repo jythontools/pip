@@ -50,6 +50,10 @@ LineEndings
 -----------
 contains DOS line endings
 
+LocalExtras
+-----------
+has an extra in a local file:// dependency link
+
 parent/child-0.1.tar.gz
 -----------------------
 The parent-0.1.tar.gz and child-0.1.tar.gz packages are used by
@@ -66,6 +70,18 @@ used for osx test case (tests.test_finder:test_no_mpkg)
 priority-*
 ----------
 used for testing wheel priority over sdists
+
+TopoRequires[1234][-0.0.1.tar.gz]
+--------------------------------
+
+These are used for testing topological handling of requirements: we have
+TopoRequires, which is install-required by TopoRequires2 and TopoRequires3
+and finally TopoRequires4 which install-requires both TopoRequires2 and 3
+and also install-Requires TopoRequires.
+This creates a diamond where no matter which way we walk without topological
+awareness we'll end up attempting to install TopoRequires after one of
+TopoRequires2, TopoRequires3 or TopoRequires4. (prefix iteration works as its
+topological, suffix iteration likewise, infix breaks).
 
 simple[2]-[123].0.tar.gz
 ------------------------
@@ -84,6 +100,11 @@ meta-1.0-py2.py3-none-any.whl
 --------------------------------------------------
 Is an empty package which install_requires the simple and simple2 packages.
 
+requires_simple_extra-0.1-py2.py3-none-any.whl
+----------------------------------------------
+requires_simple_extra[extra] requires simple==1.0
 
-
-
+requires_wheelbroken_upper
+--------------------------
+Requires wheelbroken and upper - used for testing implicit wheel building
+during install.
